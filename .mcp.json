@@ -1,6 +1,0 @@
-{
-  "seed-image-bridge": {
-    "command": "python",
-    "args": ["./scripts/mcp_server.py"]
-  }
-}
