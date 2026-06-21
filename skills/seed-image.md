@@ -35,13 +35,42 @@ Required scripts:
 | `ARK_SEED_MODEL` | No | `doubao-seed-2-0-pro-260215` | Seed model for recognition |
 | `SEED_SCRIPTS_DIR` | No | plugin scripts/ dir | Custom path to the three scripts |
 
+## Sandbox permissions (network access)
+
+The scripts make HTTPS requests to `https://ark.cn-beijing.volces.com/`, which is blocked by Codex's default sandbox. When using `shell_command` to run any of the three scripts:
+
+**IMPORTANT: Do NOT attempt to run inside the sandbox first (it will fail). Always use `require_escalated` from the start.**
+
+For every `shell_command` call to these scripts, pass these parameters:
+
+| Parameter | Value |
+|-----------|-------|
+| `sandbox_permissions` | `"require_escalated"` |
+| `justification` | `"Need network access to call ARK API at ark.cn-beijing.volces.com for image generation/recognition"` |
+| `prefix_rule` | `["python", "<resolved-absolute-path-to-script>"]` (see below) |
+
+**How to set `prefix_rule`:** After resolving the absolute path to the script (e.g. `C:\Users\xxx\.codex\plugins\seed-image-bridge\scripts\seedream.py`), pass it as the second element of the `prefix_rule` array. This saves the user's approval for subsequent calls to the same script — they only approve once per session per script type.
+
+### Example shell_command call (conceptual)
+
+```python
+shell_command(
+    command="python <SCRIPTS_DIR>/seedream.py \"a sunset\" --size 2K",
+    sandbox_permissions="require_escalated",
+    justification="Need network access to call ARK API at ark.cn-beijing.volces.com for image generation",
+    prefix_rule=["python", "<SCRIPTS_DIR>/seedream.py"]
+)
+```
+
 ## Mandatory workflow: Image generation
 
 When ANY skill, workflow, or user request asks to generate an image:
 
-**STEP 1 — Identify script directory** (see Scripts location above)
+**STEP 1 — Identify script directory** (see Scripts location above).
 
-**STEP 2 — Run generation via shell_command:**
+**STEP 2 — Resolve the absolute path to `seedream.py`.**
+
+**STEP 3 — Run generation via `shell_command` with `require_escalated` and a `prefix_rule`:**
 
 ```powershell
 python <scripts-dir>/seedream.py "<prompt>" [--size 2K|4K] [--image <ref-path>]
@@ -57,13 +86,13 @@ Size mapping from GPT conventions to Seedream:
 - `2048x2048`, `2048x1152` → `2K`
 - `3840x2160`, `2160x3840` → `4K`
 
-**STEP 3 — Display the result:**
+**STEP 4 — Display the result:**
 
 ```powershell
 view_image <saved-path>
 ```
 
-**STEP 4 —** If the generated image is a project asset, move/copy it into the workspace.
+**STEP 5 —** If the generated image is a project asset, move/copy it into the workspace.
 
 **DO NOT** suggest CLI fallback with `OPENAI_API_KEY`.
 **DO NOT** offer to use `gpt-image-2` or any GPT Image model.
@@ -73,7 +102,11 @@ view_image <saved-path>
 
 When ANY skill, workflow, or user request asks to recognize/describe/analyze an image:
 
-**STEP 1 — Upload the image to get a file_id:**
+**STEP 1 — Identify script directory.**
+
+**STEP 2 — Resolve absolute paths to `upload.py` and `seed.py`.**
+
+**STEP 3 — Upload the image (with `require_escalated`):**
 
 ```powershell
 python <scripts-dir>/upload.py <path-to-image>
@@ -81,13 +114,13 @@ python <scripts-dir>/upload.py <path-to-image>
 
 Parse the `file_id` from the JSON response.
 
-**STEP 2 — Send to vision model:**
+**STEP 4 — Send to vision model (with `require_escalated`):**
 
 ```powershell
 python <scripts-dir>/seed.py <file_id>
 ```
 
-**STEP 3 —** Relay the vision model's response back to the requesting skill/user.
+**STEP 5 —** Relay the vision model's response back to the requesting skill/user.
 
 ## If `image_gen` tool is unavailable
 
