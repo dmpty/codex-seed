@@ -14,5 +14,6 @@
     "category": "Productivity",
     "capabilities": [],
     "defaultPrompt": "Generate an image of a sunset over mountains"
-  }
+  },
+  "mcpServers": "./.mcp.json"
 }

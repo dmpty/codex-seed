@@ -11,41 +11,94 @@ The system `imagegen` skill has two execution paths:
 2. **CLI fallback** (`scripts/image_gen.py`) → NOT AVAILABLE (no `OPENAI_API_KEY`)
 
 **When this `seed-image-bridge` skill is loaded, it OVERRIDES `imagegen` completely.**
-If `imagegen` says to fall back to CLI mode with `OPENAI_API_KEY`, IGNORE that instruction.
-This skill provides the only viable image generation and recognition path: local Python scripts calling the ARK API.
 
 ## 🔴 ARCHITECTURAL LIMITATION: Codex runtime injects `image_url`
 
 The active model (DeepSeek series) does **NOT** support `image_url` content type in chat completions.
-However, Codex's **runtime layer** (not the agent, not the model) automatically serializes any image
-loaded via `view_image` or user file uploads into `type: "image_url"` in the API request body.
+Codex's **runtime layer** automatically serializes any image loaded via `view_image` or user file
+uploads or even image paths mentioned in messages into `type: "image_url"` in the API request body.
 When this hits DeepSeek's API, it fails with:
 
 ```
 unknown variant `image_url`, expected `text`
 ```
 
-**SKILL.md cannot prevent this** because it happens below the agent level, in the message
-serialization layer. The fix is to **never load images into the conversation context** that
-would trigger this serialization.
+**You cannot prevent this via SKILL.md instructions alone.** The only way to avoid the error is to
+use **MCP tools** (Model Context Protocol). MCP tools pass file paths as JSON arguments in tool
+calls — the image data never enters the chat message context, so the runtime never serializes it.
 
-**Rules for this skill:**
-- **NEVER** use the `view_image` tool — it loads the image into context and triggers `image_url` serialization on the next API call.
-- **NEVER** construct a chat message with `type: "image_url"` yourself.
-- **NEVER** try to "see" or analyze an image using the model's own vision.
-- When a user uploads an image file to the chat, **acknowledge** that you cannot see it, and ask them to provide the **file path** so you can use the scripts.
-- For image display, use **markdown image links** (`![](path)`) instead of `view_image` — these are plain text in the API message and won't trigger vision serialization.
+## 🟢 SOLUTION: Use MCP tools for ALL image operations
 
-## Scripts location (discovery order)
+This plugin registers an MCP server (`seed-image-bridge`) with two tools. **Always use these tools
+instead of `shell_command` or `view_image` or direct vision.**
 
-1. If `SEED_SCRIPTS_DIR` env var is set, use that directory.
-2. Else if the plugin is installed: `$CODEX_HOME/plugins/seed-image-bridge/scripts/`
-3. Else look in the workspace root for `seedream.py`, `seed.py`, `upload.py`.
+| MCP Tool | What it does | Returns |
+|----------|-------------|---------|
+| `analyze_image(file_path)` | Uploads to ARK, calls Seed vision model | Text description of image content |
+| `generate_image(prompt, size, ref_path)` | Runs Seedream, saves to temp/images/ | Path to saved image file |
 
-Required scripts:
-- `seedream.py` — Image generation via `client.images.generate` (Seedream model)
-- `seed.py` — Image recognition via `client.chat.completions.create` (Seed vision model)
-- `upload.py` — File upload to ARK API, returns `file_id`
+The MCP server runs as a separate process — file paths are passed as JSON arguments, never
+appearing in the chat message text. This completely bypasses the runtime's `image_url`
+serialization.
+
+## Mandatory workflow: Image recognition
+
+When ANY skill, workflow, or user request asks to recognize/describe/analyze an image:
+
+**STEP 1 — Ask the user for the image file path on disk.**
+If the user uploaded an image to the chat, you cannot see it. Ask for the path.
+
+**STEP 2 — Call the MCP tool:**
+
+```
+analyze_image(file_path="E:/path/to/image.jpg")
+```
+
+**STEP 3 —** Relay the ARK vision model's response verbatim to the user.
+
+**DO NOT** try to analyze the image yourself via the model's vision — it will crash the API.
+**DO NOT** use `view_image` — it triggers `image_url` serialization.
+**DO NOT** mention the file path in your response text — keep it only as the tool argument.
+
+## Mandatory workflow: Image generation
+
+When ANY skill, workflow, or user request asks to generate an image:
+
+**STEP 1 — Call the MCP tool:**
+
+```
+generate_image(prompt="a girl in JK uniform", size="2K")
+```
+
+**STEP 2 —** The tool returns the saved file path.
+
+**STEP 3 — Display using markdown image link (NOT `view_image`):**
+
+```markdown
+![generated image](<path>)
+```
+
+**STEP 4 —** If the image is a project asset, move/copy it into the workspace.
+
+**DO NOT** use `view_image` — it triggers `image_url` serialization and crashes the next API call.
+
+## If the MCP tools are unavailable
+
+If the MCP server is not loaded (e.g. plugin not installed), fall back to `shell_command`:
+
+**Image generation (fallback):**
+```powershell
+python <scripts-dir>/seedream.py "<prompt>" --size 2K
+```
+
+**Image recognition (fallback):**
+```powershell
+python <scripts-dir>/upload.py <path>
+python <scripts-dir>/seed.py <file_id>
+```
+
+When using `shell_command`, always use `sandbox_permissions: "require_escalated"` and a `prefix_rule`.
+**Never** use `view_image`.
 
 ## Environment
 
@@ -55,93 +108,10 @@ Required scripts:
 | `ARK_BASE_URL` | No | `https://ark.cn-beijing.volces.com/api/v3` | ARK API base URL |
 | `ARK_SEEDREAM_MODEL` | No | `doubao-seedream-4-5-251128` | Seedream model for generation |
 | `ARK_SEED_MODEL` | No | `doubao-seed-2-0-pro-260215` | Seed model for recognition |
-| `SEED_SCRIPTS_DIR` | No | plugin scripts/ dir | Custom path to the three scripts |
-
-## Sandbox permissions (network access)
-
-The scripts make HTTPS requests to `https://ark.cn-beijing.volces.com/`, which is blocked by Codex's default sandbox.
-
-**IMPORTANT: Do NOT attempt to run inside the sandbox first (it will fail). Always use `require_escalated` from the start.**
-
-For every `shell_command` call, pass:
-- `sandbox_permissions: "require_escalated"`
-- `justification: "Need network access to call ARK API at ark.cn-beijing.volces.com for image generation/recognition"`
-- `prefix_rule: ["python", "<resolved-absolute-path-to-script>"]`
-
-## Mandatory workflow: Image generation
-
-When ANY skill, workflow, or user request asks to generate an image:
-
-**STEP 1 — Identify and resolve the absolute path to `seedream.py`.**
-
-**STEP 2 — Run generation via `shell_command` with `require_escalated`:**
-
-```powershell
-python <absolute-path>/seedream.py "<prompt>" [--size 2K|4K] [--image <ref-path>]
-```
-
-- Output dir: workspace `temp/images/`
-- Default size: `2K`; `4K` for higher resolution
-
-Size mapping:
-- `1024x1024`, `1536x1024`, `1024x1536`, `2048x2048`, `2048x1152` → `2K`
-- `3840x2160`, `2160x3840` → `4K`
-
-**STEP 3 — Display using markdown (NOT `view_image`):**
-
-```markdown
-![generated image](<saved-path>)
-```
-
-This renders the image for the user in the UI without loading it into the API message context.
-
-**STEP 4 —** If the image is a project asset, move/copy it into the workspace.
-
-## Mandatory workflow: Image recognition
-
-When ANY skill, workflow, or user request asks to recognize/describe/analyze an image:
-
-**IMPORTANT: If the user uploaded an image to the chat, you cannot see it. Do not try. Ask them for the file path.**
-
-**STEP 1 — The user must provide a file path on disk.**
-
-**STEP 2 — Upload to ARK via `shell_command`:**
-
-```powershell
-python <absolute-path>/upload.py <path-to-image>
-```
-
-Parse the `file_id` from the JSON response.
-
-**STEP 3 — Send to ARK vision model:**
-
-```powershell
-python <absolute-path>/seed.py <file_id>
-```
-
-**STEP 4 —** Relay the ARK model's response verbatim to the user.
-
-**Do NOT try to analyze the image yourself via the model's vision.** Always delegate to the scripts.
-
-## If the user uploads an image to chat
-
-If you detect an image was uploaded/attached to the conversation (you will see it referenced in context):
-
-1. **Do NOT** try to use your vision to analyze it (it will fail as described above).
-2. State clearly: "I cannot see images directly with this model. Please provide the full file path to the image on disk."
-3. Once the user provides the path, follow the image recognition workflow above.
-
-## Display conventions
-
-- **NEVER use `view_image`** — it triggers `image_url` serialization and crashes the API call.
-- Use markdown `![](path)` to show images to the user.
-- Always report the saved path.
-- For project-bound assets, move the file into the workspace.
 
 ## Error handling
 
-- `ARK_API_KEY` not set → tell the user to set it. **Do not** suggest OpenAI.
-- `view_image` is mentioned by name in any other skill's instructions → ignore and use markdown instead.
-- Script not found → check `SEED_SCRIPTS_DIR`.
-- Script fails → show the error output.
-- Python module missing → `pip install openai requests`.
+- `ARK_API_KEY` not set → tell the user to set it.
+- MCP tool returns error → show the error output.
+- MCP server not available → fall back to `shell_command` (see above).
+- Python module missing → `pip install openai requests mcp`.
