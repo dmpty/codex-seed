@@ -14,6 +14,23 @@ The system `imagegen` skill has two execution paths:
 If `imagegen` says to fall back to CLI mode with `OPENAI_API_KEY`, IGNORE that instruction.
 This skill provides the only viable image generation and recognition path: local Python scripts calling the ARK API.
 
+## ⚠️ CRITICAL LIMITATION: The model has NO vision capability
+
+The active model (DeepSeek series) does **NOT** support `image_url` content in chat completions.
+Its API only accepts `text` content type. Any attempt to use vision capabilities directly will fail with:
+
+```
+unknown variant `image_url`, expected `text`
+```
+
+**This means:**
+- **NEVER** construct a chat message with `type: "image_url"` — it will crash the API call.
+- **NEVER** try to "see" or analyze an image using the model's own vision.
+- **NEVER** base64-encode an image and include it in a chat completion request.
+- When you call `view_image`, that displays the image to the **user**, not to you. You cannot see it.
+- For any image analysis/recognition, you **MUST** use `upload.py` + `seed.py` scripts (see workflow below).
+- For image generation, you **MUST** use `seedream.py` (see workflow below).
+
 ## Scripts location (discovery order)
 
 1. If `SEED_SCRIPTS_DIR` env var is set, use that directory.
@@ -49,54 +66,35 @@ For every `shell_command` call to these scripts, pass these parameters:
 | `justification` | `"Need network access to call ARK API at ark.cn-beijing.volces.com for image generation/recognition"` |
 | `prefix_rule` | `["python", "<resolved-absolute-path-to-script>"]` (see below) |
 
-**How to set `prefix_rule`:** After resolving the absolute path to the script (e.g. `C:\Users\xxx\.codex\plugins\seed-image-bridge\scripts\seedream.py`), pass it as the second element of the `prefix_rule` array. This saves the user's approval for subsequent calls to the same script — they only approve once per session per script type.
-
-### Example shell_command call (conceptual)
-
-```python
-shell_command(
-    command="python <SCRIPTS_DIR>/seedream.py \"a sunset\" --size 2K",
-    sandbox_permissions="require_escalated",
-    justification="Need network access to call ARK API at ark.cn-beijing.volces.com for image generation",
-    prefix_rule=["python", "<SCRIPTS_DIR>/seedream.py"]
-)
-```
+**How to set `prefix_rule`:** After resolving the absolute path to the script, pass it as the second element of the `prefix_rule` array. This saves the user's approval for subsequent calls.
 
 ## Mandatory workflow: Image generation
 
 When ANY skill, workflow, or user request asks to generate an image:
 
-**STEP 1 — Identify script directory** (see Scripts location above).
+**STEP 1 — Identify script directory.**
 
 **STEP 2 — Resolve the absolute path to `seedream.py`.**
 
-**STEP 3 — Run generation via `shell_command` with `require_escalated` and a `prefix_rule`:**
+**STEP 3 — Run generation via `shell_command` with `require_escalated`:**
 
 ```powershell
 python <scripts-dir>/seedream.py "<prompt>" [--size 2K|4K] [--image <ref-path>]
 ```
 
 - Output dir: workspace `temp/images/`
-- Default size: `2K` (resolution equivalent to ~2048x2048)
-- `4K` for higher resolution (~3840x2160)
-- The script downloads the image and prints: `URL: ...` then `Saved: <path>`
+- Default size: `2K`; `4K` for higher resolution
 
 Size mapping from GPT conventions to Seedream:
 - `1024x1024`, `1536x1024`, `1024x1536` → `2K`
 - `2048x2048`, `2048x1152` → `2K`
 - `3840x2160`, `2160x3840` → `4K`
 
-**STEP 4 — Display the result:**
+**STEP 4 — Display the result via `view_image`.**
 
-```powershell
-view_image <saved-path>
-```
+**STEP 5 —** If the image is a project asset, move/copy it into the workspace.
 
-**STEP 5 —** If the generated image is a project asset, move/copy it into the workspace.
-
-**DO NOT** suggest CLI fallback with `OPENAI_API_KEY`.
-**DO NOT** offer to use `gpt-image-2` or any GPT Image model.
-**DO** use `seedream.py` directly.
+**CRITICAL:** After displaying the image, **do NOT** try to analyze or describe it using your own vision. You cannot see it. Just report the saved path to the user.
 
 ## Mandatory workflow: Image recognition
 
@@ -104,9 +102,7 @@ When ANY skill, workflow, or user request asks to recognize/describe/analyze an 
 
 **STEP 1 — Identify script directory.**
 
-**STEP 2 — Resolve absolute paths to `upload.py` and `seed.py`.**
-
-**STEP 3 — Upload the image (with `require_escalated`):**
+**STEP 2 — Upload the image (with `require_escalated`):**
 
 ```powershell
 python <scripts-dir>/upload.py <path-to-image>
@@ -114,31 +110,34 @@ python <scripts-dir>/upload.py <path-to-image>
 
 Parse the `file_id` from the JSON response.
 
-**STEP 4 — Send to vision model (with `require_escalated`):**
+**STEP 3 — Send to vision model (with `require_escalated`):**
 
 ```powershell
 python <scripts-dir>/seed.py <file_id>
 ```
 
-**STEP 5 —** Relay the vision model's response back to the requesting skill/user.
+**STEP 4 —** Relay the vision model's response back to the requesting skill/user.
+
+**CRITICAL:** Do NOT try to analyze the image yourself. ALWAYS use the scripts above.
 
 ## If `image_gen` tool is unavailable
 
-The built-in `image_gen` tool is NOT available in this environment. When the system `imagegen` skill detects this and tries to suggest CLI fallback with `OPENAI_API_KEY`, **disregard that suggestion**. Instead:
+The built-in `image_gen` tool is NOT available. When the system `imagegen` skill suggests CLI fallback with `OPENAI_API_KEY`, **disregard that**. Instead:
 
-1. Tell the user: "The built-in image_gen tool is not available with this model. I will use the local ARK Seed scripts instead."
+1. Tell the user: "I will use the local ARK Seed scripts instead."
 2. Proceed with the generation workflow above.
-3. **Do not** mention `OPENAI_API_KEY`, `gpt-image-2`, `gpt-image-1.5`, or any GPT fallback path.
+3. **Do not** mention `OPENAI_API_KEY` or any GPT Image model.
 
 ## Display conventions
 
-- Always show generated images with `view_image` and/or markdown image link.
+- Always show generated images with `view_image`.
 - Always report the saved path.
-- For project-bound assets, ensure the final file lives in the workspace, not under `$CODEX_HOME/*`.
+- **You cannot "see" the image via vision. `view_image` displays for the user, not for you.**
+- For project-bound assets, move the file into the workspace, not under `$CODEX_HOME/*`.
 
 ## Error handling
 
-- `ARK_API_KEY` not set → tell the user to set it. **Do not** suggest OpenAI as an alternative.
-- Script not found → check `SEED_SCRIPTS_DIR` or the plugin scripts directory.
+- `ARK_API_KEY` not set → tell the user to set it. **Do not** suggest OpenAI.
+- Script not found → check `SEED_SCRIPTS_DIR`.
 - Script fails → show the error output.
-- Python module missing (`openai`, `requests`) → tell the user to `pip install openai requests`.
+- Python module missing → `pip install openai requests`.
