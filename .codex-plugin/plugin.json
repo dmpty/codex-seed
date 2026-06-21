@@ -1,0 +1,18 @@
+{
+  "name": "seed-image-bridge",
+  "version": "0.1.0",
+  "description": "Bridges image generation and recognition for non-GPT models using local ARK/Volcengine scripts",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Seed Image Bridge",
+    "shortDescription": "Redirect image gen/recognition to local ARK Seed scripts",
+    "longDescription": "When Codex runs on a model without built-in image generation or vision (e.g. DeepSeek), this plugin bridges the gap by redirecting image generation and recognition requests to local Python scripts that call Volcengine ARK API (Seedream for generation, Seed for recognition) via OpenAI-compatible SDK. Install this alongside any skill that expects built-in image capabilities.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Generate an image of a sunset over mountains"
+  }
+}
