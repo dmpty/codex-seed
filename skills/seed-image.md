@@ -14,22 +14,27 @@ The system `imagegen` skill has two execution paths:
 If `imagegen` says to fall back to CLI mode with `OPENAI_API_KEY`, IGNORE that instruction.
 This skill provides the only viable image generation and recognition path: local Python scripts calling the ARK API.
 
-## ⚠️ CRITICAL LIMITATION: The model has NO vision capability
+## 🔴 ARCHITECTURAL LIMITATION: Codex runtime injects `image_url`
 
-The active model (DeepSeek series) does **NOT** support `image_url` content in chat completions.
-Its API only accepts `text` content type. Any attempt to use vision capabilities directly will fail with:
+The active model (DeepSeek series) does **NOT** support `image_url` content type in chat completions.
+However, Codex's **runtime layer** (not the agent, not the model) automatically serializes any image
+loaded via `view_image` or user file uploads into `type: "image_url"` in the API request body.
+When this hits DeepSeek's API, it fails with:
 
 ```
 unknown variant `image_url`, expected `text`
 ```
 
-**This means:**
-- **NEVER** construct a chat message with `type: "image_url"` — it will crash the API call.
+**SKILL.md cannot prevent this** because it happens below the agent level, in the message
+serialization layer. The fix is to **never load images into the conversation context** that
+would trigger this serialization.
+
+**Rules for this skill:**
+- **NEVER** use the `view_image` tool — it loads the image into context and triggers `image_url` serialization on the next API call.
+- **NEVER** construct a chat message with `type: "image_url"` yourself.
 - **NEVER** try to "see" or analyze an image using the model's own vision.
-- **NEVER** base64-encode an image and include it in a chat completion request.
-- When you call `view_image`, that displays the image to the **user**, not to you. You cannot see it.
-- For any image analysis/recognition, you **MUST** use `upload.py` + `seed.py` scripts (see workflow below).
-- For image generation, you **MUST** use `seedream.py` (see workflow below).
+- When a user uploads an image file to the chat, **acknowledge** that you cannot see it, and ask them to provide the **file path** so you can use the scripts.
+- For image display, use **markdown image links** (`![](path)`) instead of `view_image` — these are plain text in the API message and won't trigger vision serialization.
 
 ## Scripts location (discovery order)
 
@@ -54,90 +59,89 @@ Required scripts:
 
 ## Sandbox permissions (network access)
 
-The scripts make HTTPS requests to `https://ark.cn-beijing.volces.com/`, which is blocked by Codex's default sandbox. When using `shell_command` to run any of the three scripts:
+The scripts make HTTPS requests to `https://ark.cn-beijing.volces.com/`, which is blocked by Codex's default sandbox.
 
 **IMPORTANT: Do NOT attempt to run inside the sandbox first (it will fail). Always use `require_escalated` from the start.**
 
-For every `shell_command` call to these scripts, pass these parameters:
-
-| Parameter | Value |
-|-----------|-------|
-| `sandbox_permissions` | `"require_escalated"` |
-| `justification` | `"Need network access to call ARK API at ark.cn-beijing.volces.com for image generation/recognition"` |
-| `prefix_rule` | `["python", "<resolved-absolute-path-to-script>"]` (see below) |
-
-**How to set `prefix_rule`:** After resolving the absolute path to the script, pass it as the second element of the `prefix_rule` array. This saves the user's approval for subsequent calls.
+For every `shell_command` call, pass:
+- `sandbox_permissions: "require_escalated"`
+- `justification: "Need network access to call ARK API at ark.cn-beijing.volces.com for image generation/recognition"`
+- `prefix_rule: ["python", "<resolved-absolute-path-to-script>"]`
 
 ## Mandatory workflow: Image generation
 
 When ANY skill, workflow, or user request asks to generate an image:
 
-**STEP 1 — Identify script directory.**
+**STEP 1 — Identify and resolve the absolute path to `seedream.py`.**
 
-**STEP 2 — Resolve the absolute path to `seedream.py`.**
-
-**STEP 3 — Run generation via `shell_command` with `require_escalated`:**
+**STEP 2 — Run generation via `shell_command` with `require_escalated`:**
 
 ```powershell
-python <scripts-dir>/seedream.py "<prompt>" [--size 2K|4K] [--image <ref-path>]
+python <absolute-path>/seedream.py "<prompt>" [--size 2K|4K] [--image <ref-path>]
 ```
 
 - Output dir: workspace `temp/images/`
 - Default size: `2K`; `4K` for higher resolution
 
-Size mapping from GPT conventions to Seedream:
-- `1024x1024`, `1536x1024`, `1024x1536` → `2K`
-- `2048x2048`, `2048x1152` → `2K`
+Size mapping:
+- `1024x1024`, `1536x1024`, `1024x1536`, `2048x2048`, `2048x1152` → `2K`
 - `3840x2160`, `2160x3840` → `4K`
 
-**STEP 4 — Display the result via `view_image`.**
+**STEP 3 — Display using markdown (NOT `view_image`):**
 
-**STEP 5 —** If the image is a project asset, move/copy it into the workspace.
+```markdown
+![generated image](<saved-path>)
+```
 
-**CRITICAL:** After displaying the image, **do NOT** try to analyze or describe it using your own vision. You cannot see it. Just report the saved path to the user.
+This renders the image for the user in the UI without loading it into the API message context.
+
+**STEP 4 —** If the image is a project asset, move/copy it into the workspace.
 
 ## Mandatory workflow: Image recognition
 
 When ANY skill, workflow, or user request asks to recognize/describe/analyze an image:
 
-**STEP 1 — Identify script directory.**
+**IMPORTANT: If the user uploaded an image to the chat, you cannot see it. Do not try. Ask them for the file path.**
 
-**STEP 2 — Upload the image (with `require_escalated`):**
+**STEP 1 — The user must provide a file path on disk.**
+
+**STEP 2 — Upload to ARK via `shell_command`:**
 
 ```powershell
-python <scripts-dir>/upload.py <path-to-image>
+python <absolute-path>/upload.py <path-to-image>
 ```
 
 Parse the `file_id` from the JSON response.
 
-**STEP 3 — Send to vision model (with `require_escalated`):**
+**STEP 3 — Send to ARK vision model:**
 
 ```powershell
-python <scripts-dir>/seed.py <file_id>
+python <absolute-path>/seed.py <file_id>
 ```
 
-**STEP 4 —** Relay the vision model's response back to the requesting skill/user.
+**STEP 4 —** Relay the ARK model's response verbatim to the user.
 
-**CRITICAL:** Do NOT try to analyze the image yourself. ALWAYS use the scripts above.
+**Do NOT try to analyze the image yourself via the model's vision.** Always delegate to the scripts.
 
-## If `image_gen` tool is unavailable
+## If the user uploads an image to chat
 
-The built-in `image_gen` tool is NOT available. When the system `imagegen` skill suggests CLI fallback with `OPENAI_API_KEY`, **disregard that**. Instead:
+If you detect an image was uploaded/attached to the conversation (you will see it referenced in context):
 
-1. Tell the user: "I will use the local ARK Seed scripts instead."
-2. Proceed with the generation workflow above.
-3. **Do not** mention `OPENAI_API_KEY` or any GPT Image model.
+1. **Do NOT** try to use your vision to analyze it (it will fail as described above).
+2. State clearly: "I cannot see images directly with this model. Please provide the full file path to the image on disk."
+3. Once the user provides the path, follow the image recognition workflow above.
 
 ## Display conventions
 
-- Always show generated images with `view_image`.
+- **NEVER use `view_image`** — it triggers `image_url` serialization and crashes the API call.
+- Use markdown `![](path)` to show images to the user.
 - Always report the saved path.
-- **You cannot "see" the image via vision. `view_image` displays for the user, not for you.**
-- For project-bound assets, move the file into the workspace, not under `$CODEX_HOME/*`.
+- For project-bound assets, move the file into the workspace.
 
 ## Error handling
 
 - `ARK_API_KEY` not set → tell the user to set it. **Do not** suggest OpenAI.
+- `view_image` is mentioned by name in any other skill's instructions → ignore and use markdown instead.
 - Script not found → check `SEED_SCRIPTS_DIR`.
 - Script fails → show the error output.
 - Python module missing → `pip install openai requests`.
