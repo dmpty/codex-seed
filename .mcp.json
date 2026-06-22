@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "seed-image-bridge": {
+      "command": "python",
+      "args": ["scripts/mcp_server.py"],
+      "cwd": ".",
+      "tool_timeout_sec": 300
+    }
+  }
+}

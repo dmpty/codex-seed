@@ -1,19 +1,9 @@
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-env/
 
-# Temp / output
-temp/
-output/
-
-# Environment
-.env
-.env.local
-*.env
+# Temp
+temp/*
+!temp/.gitkeep
 
 # OS
 .DS_Store
@@ -22,5 +12,3 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
-*.swp
-*.swo

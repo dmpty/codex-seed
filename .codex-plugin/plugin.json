@@ -1,6 +1,6 @@
 {
   "name": "seed-image-bridge",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Bridges image generation and recognition for non-GPT models using local ARK/Volcengine scripts",
   "author": {
     "name": "Local developer"
@@ -13,6 +13,7 @@
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Generate an image of a sunset over mountains"
-  }
+  "defaultPrompt": "Generate an image of a sunset over mountains"
+  },
+  "mcpServers": "./.mcp.json"
 }
