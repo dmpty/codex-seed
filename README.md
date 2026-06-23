@@ -10,7 +10,7 @@ images.
 
 ### 1. Start CC Switch
 
-[CC Switch](https://github.com/Elluifi/cc-switch) must be running on port
+[CC Switch](https://github.com/farion1231/cc-switch) must be running on port
 15721 before anything else.
 
 ### 2. Start the image bridge
