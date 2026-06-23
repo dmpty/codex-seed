@@ -6,13 +6,35 @@ set -euo pipefail
 # Single entry point: auto-installs the plugin if needed, then starts the
 # image stripper proxy that sits between Codex and CC Switch.
 #
+# Usage:
+#   ./start.sh                          # defaults: stripper=11435, CC=15721
+#   ./start.sh 12345                    # custom stripper port
+#   ./start.sh 11435 9999               # custom CC Switch port
+#   ./start.sh 8080 9999                # both custom
+#   ./start.sh --help                   # show this help
+#
+# CC Switch must already be running.
+
+PORT="${1:-11435}"
+CC_PORT="${2:-15721}"
+
+case "$PORT" in
+  --help|-h)
+    sed -n '2,10p' "# Start Codex Image Bridge
+#
+# Single entry point: auto-installs the plugin if needed, then starts the
+# image stripper proxy that sits between Codex and CC Switch.
+#
 # CC Switch must already be running (default port 15721).
 #
 # Automatically backs up config.toml and updates base_url to point at the
 # stripper. Restore with: cp ~/.codex/config.toml.stripper-bak ~/.codex/config.toml
 
 PORT="${1:-11435}"
-CC_PORT="${2:-15721}"
+CC_PORT="${2:-15721}""
+    exit 0
+    ;;
+esac
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -32,9 +54,54 @@ if [ ! -f "$PLUGIN_JSON" ]; then
 fi
 
 # ------------------------------
+# 0.5. Ensure config.toml entries always present
+# ------------------------------
+PLUGIN_DIR="$CODEX_HOME/plugins/seed-image-bridge"
+CONFIG_PATH="$CODEX_HOME/config.toml"
+if [ -f "$CONFIG_PATH" ]; then
+  PLUGIN_SECTION='[plugins."seed-image-bridge@personal"]'
+  MCP_SECTION='[mcp_servers.seed-image-bridge]'
+  ENV_SECTION='[mcp_servers.seed-image-bridge.env]'
+
+  if ! grep -qF "$PLUGIN_SECTION" "$CONFIG_PATH"; then
+    printf '\n%s\nenabled = true\n' "$PLUGIN_SECTION" >> "$CONFIG_PATH"
+    echo "[config] Plugin enabled"
+  fi
+
+  if ! grep -qF "$MCP_SECTION" "$CONFIG_PATH"; then
+    cat >> "$CONFIG_PATH" << MCPEOF
+
+$MCP_SECTION
+args = ["$PLUGIN_DIR/scripts/mcp_server.py"]
+command = "python3"
+cwd = "$PLUGIN_DIR"
+tool_timeout_sec = 300
+MCPEOF
+    echo "[config] MCP server registered"
+  fi
+
+  if ! grep -qF "$ENV_SECTION" "$CONFIG_PATH"; then
+    ENV_BLOCK=""
+    [ -n "$ARK_API_KEY" ] && ENV_BLOCK="${ENV_BLOCK}ARK_API_KEY = \"$ARK_API_KEY\"
+"
+    [ -n "$ARK_BASE_URL" ] && ENV_BLOCK="${ENV_BLOCK}ARK_BASE_URL = \"$ARK_BASE_URL\"
+"
+    [ -n "$ARK_SEEDREAM_MODEL" ] && ENV_BLOCK="${ENV_BLOCK}ARK_SEEDREAM_MODEL = \"$ARK_SEEDREAM_MODEL\"
+"
+    [ -n "$ARK_SEED_MODEL" ] && ENV_BLOCK="${ENV_BLOCK}ARK_SEED_MODEL = \"$ARK_SEED_MODEL\"
+"
+    if [ -n "$ENV_BLOCK" ]; then
+      printf '\n%s\n%s' "$ENV_SECTION" "$ENV_BLOCK" >> "$CONFIG_PATH"
+      echo "[config] MCP env vars configured"
+    fi
+  fi
+fi
+
+# ------------------------------
 # 1. Check CC Switch is running
 # ------------------------------
 CC_URL="http://127.0.0.1:$CC_PORT/v1/models"
+
 if curl -s --max-time 5 "$CC_URL" > /dev/null 2>&1; then
   echo "[check] CC Switch running on port $CC_PORT"
 else

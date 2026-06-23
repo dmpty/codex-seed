@@ -3,7 +3,13 @@
 # Single entry point: auto-installs the plugin if needed, then starts the
 # image stripper proxy that sits between Codex and CC Switch.
 #
-# CC Switch must already be running (default port 15721).
+# Usage:
+#   .\start.ps1                         # defaults: stripper=11435, CC=15721
+#   .\start.ps1 -Port 12345             # custom stripper port
+#   .\start.ps1 -CCPort 9999            # custom CC Switch port
+#   .\start.ps1 -Port 8080 -CCPort 9999 # both custom
+#
+# CC Switch must already be running.
 #
 # Automatically backs up config.toml and updates base_url to point at the
 # stripper. Restore with: Copy-Item ~/.codex/config.toml.stripper-bak ~/.codex/config.toml
@@ -29,6 +35,63 @@ if (-not (Test-Path $PluginJson)) {
         Write-Host "ERROR: install.ps1 not found at $installScript" -ForegroundColor Red
         exit 1
     }
+}
+
+# ------------------------------
+# 0.5. Ensure config.toml entries always present
+# ------------------------------
+$PluginDir = "$CodexHome\plugins\seed-image-bridge"
+$configPath = "$CodexHome\config.toml"
+$configNeedsSave = $false
+$config = if (Test-Path $configPath) { Get-Content $configPath -Raw -Encoding UTF8 } else { "" }
+
+# Plugin enabled
+$pluginSection = '[plugins."seed-image-bridge@personal"]'
+if ($config -notmatch [regex]::Escape($pluginSection)) {
+    $config = $config.TrimEnd() + "`r`n`r`n${pluginSection}`r`nenabled = true`r`n"
+    Write-Host "[config] Plugin enabled" -ForegroundColor Green
+    $configNeedsSave = $true
+}
+
+# MCP server registration
+$NormalizedPluginDir = $PluginDir -replace '\\', '/'
+$mcpSection = '[mcp_servers.seed-image-bridge]'
+if ($config -notmatch [regex]::Escape($mcpSection)) {
+    $mcpBlock = @"
+
+$mcpSection
+args = ["$NormalizedPluginDir/scripts/mcp_server.py"]
+command = "python"
+cwd = "$NormalizedPluginDir"
+tool_timeout_sec = 300
+
+"@
+    $config = $config -replace "(?m)^\[projects\.", "`r`n$mcpBlock`r`n[projects."
+    if ($config -notmatch [regex]::Escape($mcpSection)) {
+        $config = $config.TrimEnd() + "`r`n$mcpBlock`r`n"
+    }
+    Write-Host "[config] MCP server registered" -ForegroundColor Green
+    $configNeedsSave = $true
+}
+
+# MCP env vars
+$envSection = '[mcp_servers.seed-image-bridge.env]'
+if ($config -notmatch [regex]::Escape($envSection)) {
+    $envBlock = "$envSection`r`n"
+    $hasEnvVars = $false
+    foreach ($var in @('ARK_API_KEY', 'ARK_BASE_URL', 'ARK_SEEDREAM_MODEL', 'ARK_SEED_MODEL')) {
+        $val = [Environment]::GetEnvironmentVariable($var)
+        if ($val) { $envBlock += "$var = `"$val`"`r`n"; $hasEnvVars = $true }
+    }
+    if ($hasEnvVars) {
+        $config = $config -replace '(tool_timeout_sec = 300)', "`$1`r`n`r`n$envBlock"
+        Write-Host "[config] MCP env vars configured" -ForegroundColor Green
+        $configNeedsSave = $true
+    }
+}
+
+if ($configNeedsSave) {
+    Set-Content -Path $configPath -Value $config -Encoding UTF8 -NoNewline
 }
 
 # ------------------------------

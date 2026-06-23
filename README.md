@@ -28,6 +28,21 @@ images.
 This auto-installs the plugin (if needed), updates `config.toml`, and
 starts the image stripper proxy. Keep this terminal open.
 
+
+#### Custom ports
+
+If CC Switch runs on a non-default port, or you need the stripper on a
+different port:
+
+```powershell
+# Windows (named parameters)
+.\start.ps1 -Port 12345 -CCPort 99999
+```
+
+```bash
+# macOS / Linux (positional: stripper_port cc_port)
+./start.sh 12345 99999
+```
 ### 3. Restart Codex
 
 Close and reopen Codex. The plugin will register itself, the MCP server
